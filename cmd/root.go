@@ -9,8 +9,9 @@ import (
 )
 
 type rootConfig struct {
-	APIKey  string
-	BaseURL string
+	APIKey   string
+	BaseURL  string
+	Provider string
 }
 
 var (
@@ -18,9 +19,9 @@ var (
 	versionFlag bool
 	rootCmd     = &cobra.Command{
 		Use:     "sag",
-		Short:   "🗣️ ElevenLabs speech, mac-style ease",
-		Long:    "Command-line ElevenLabs TTS with macOS playback. Call it like macOS 'say': if you skip the subcommand, text args are passed to 'speak' (e.g. `sag \"Hello\"`).\n\nTip: run `sag prompting` for model-specific prompting tips.\nModels: `eleven_v3` (default), `eleven_multilingual_v2` (stable), `eleven_flash_v2_5` (fast/cheap), `eleven_turbo_v2_5` (balanced).",
-		Example: "  sag \"Hi Peter\"\n  echo 'piped input' | sag\n  sag speak -v Roger --rate 200 \"Faster speech\"\n  sag prompting",
+		Short:   "🗣️ Multi-provider TTS, mac-style ease",
+		Long:    "Command-line TTS with macOS playback. Supports ElevenLabs and Inworld providers.\nCall it like macOS 'say': if you skip the subcommand, text args are passed to 'speak' (e.g. `sag \"Hello\"`).\n\nTip: run `sag prompting` for model-specific prompting tips.\n\nProviders:\n  elevenlabs (default): eleven_v3, eleven_multilingual_v2, eleven_flash_v2_5\n  inworld: inworld-tts-1, inworld-tts-1-max",
+		Example: "  sag \"Hi Peter\"\n  sag --provider inworld \"Hello from Inworld\"\n  echo 'piped input' | sag\n  sag speak -v Roger --rate 200 \"Faster speech\"",
 		Version: "0.2.1",
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if versionFlag {
@@ -42,8 +43,9 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfg.APIKey, "api-key", "", "ElevenLabs API key (or ELEVENLABS_API_KEY)")
-	rootCmd.PersistentFlags().StringVar(&cfg.BaseURL, "base-url", "https://api.elevenlabs.io", "Override ElevenLabs API base URL")
+	rootCmd.PersistentFlags().StringVar(&cfg.Provider, "provider", "elevenlabs", "TTS provider (elevenlabs, inworld)")
+	rootCmd.PersistentFlags().StringVar(&cfg.APIKey, "api-key", "", "API key (or provider-specific env var)")
+	rootCmd.PersistentFlags().StringVar(&cfg.BaseURL, "base-url", "", "Override API base URL")
 	rootCmd.PersistentFlags().BoolVarP(&versionFlag, "version", "V", false, "Print version and exit")
 }
 

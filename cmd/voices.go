@@ -7,7 +7,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/steipete/sag/internal/elevenlabs"
+	"github.com/steipete/sag/internal/tts"
+
+	// Import providers to register them
+	_ "github.com/steipete/sag/internal/elevenlabs"
+	_ "github.com/steipete/sag/internal/inworld"
 
 	"github.com/spf13/cobra"
 )
@@ -24,16 +28,20 @@ func init() {
 
 	cmd := &cobra.Command{
 		Use:   "voices",
-		Short: "List available ElevenLabs voices",
+		Short: "List available voices for the current provider",
 		PreRunE: func(_ *cobra.Command, _ []string) error {
 			return ensureAPIKey()
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client := elevenlabs.NewClient(cfg.APIKey, cfg.BaseURL)
+			provider, err := tts.Get(cfg.Provider, cfg.APIKey, cfg.BaseURL)
+			if err != nil {
+				return err
+			}
+
 			ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 			defer cancel()
 
-			voices, err := client.ListVoices(ctx, opts.search)
+			voices, err := provider.ListVoices(ctx, opts.search)
 			if err != nil {
 				return err
 			}
@@ -47,7 +55,7 @@ func init() {
 				return err
 			}
 			for _, v := range voices {
-				if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", v.VoiceID, v.Name, v.Category); err != nil {
+				if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", v.ID, v.Name, v.Category); err != nil {
 					return err
 				}
 			}

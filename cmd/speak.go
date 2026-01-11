@@ -12,7 +12,11 @@ import (
 	"time"
 
 	"github.com/steipete/sag/internal/audio"
-	"github.com/steipete/sag/internal/elevenlabs"
+	"github.com/steipete/sag/internal/tts"
+
+	// Import providers to register them
+	_ "github.com/steipete/sag/internal/elevenlabs"
+	_ "github.com/steipete/sag/internal/inworld"
 
 	"github.com/spf13/cobra"
 )
@@ -46,16 +50,15 @@ var playToSpeakers = audio.StreamToSpeakers
 
 func init() {
 	opts := speakOptions{
-		modelID:   "eleven_v3",
-		outputFmt: "mp3_44100_128",
-		stream:    true,
-		play:      true,
-		speed:     1.0,
+		// modelID and outputFmt are set from provider defaults
+		stream: true,
+		play:   true,
+		speed:  1.0,
 	}
 
 	cmd := &cobra.Command{
 		Use:   "speak [text]",
-		Short: "Speak the provided text using ElevenLabs TTS (default: stream to speakers)",
+		Short: "Speak the provided text using TTS (default: stream to speakers)",
 		Long:  "If no text argument is provided, the command reads from stdin.\n\nTip: run `sag prompting` for model-specific prompting tips and recommended flag combinations.",
 		Args:  cobra.ArbitraryArgs,
 		PreRunE: func(_ *cobra.Command, _ []string) error {
@@ -66,22 +69,36 @@ func init() {
 				return errors.New("speed must be between 0.5 and 2.0 (e.g. 1.1 for 10% faster)")
 			}
 			if opts.rateWPM > 0 {
-				// Map macOS `say` rate (words per minute) to ElevenLabs speed multiplier.
+				// Map macOS `say` rate (words per minute) to speed multiplier.
 				opts.speed = float64(opts.rateWPM) / float64(defaultWPM)
 				if opts.speed <= 0.5 || opts.speed >= 2.0 {
 					return fmt.Errorf("rate %d wpm maps to speed %.2f, which is outside the allowed 0.5–2.0 range", opts.rateWPM, opts.speed)
 				}
 			}
 
+			// Get the TTS provider
+			provider, err := tts.Get(cfg.Provider, cfg.APIKey, cfg.BaseURL)
+			if err != nil {
+				return err
+			}
+
+			// Apply provider defaults if not set
+			if opts.modelID == "" {
+				opts.modelID = provider.DefaultModel()
+			}
+			if opts.outputFmt == "" {
+				opts.outputFmt = provider.DefaultFormat()
+			}
+
+			// Load voice from environment if not set
 			if opts.voiceID == "" {
-				opts.voiceID = os.Getenv("ELEVENLABS_VOICE_ID")
+				opts.voiceID = os.Getenv(toEnvName(cfg.Provider) + "_VOICE_ID")
 			}
 			if opts.voiceID == "" {
 				opts.voiceID = os.Getenv("SAG_VOICE_ID")
 			}
-			client := elevenlabs.NewClient(cfg.APIKey, cfg.BaseURL)
 
-			voiceID, err := resolveVoice(cmd.Context(), client, opts.voiceID)
+			voiceID, err := resolveVoice(cmd.Context(), provider, opts.voiceID)
 			if err != nil {
 				return err
 			}
@@ -98,7 +115,7 @@ func init() {
 
 			// If user provided output path with a known extension, infer a compatible format.
 			if opts.outputPath != "" {
-				if inferred := inferFormatFromExt(opts.outputPath); inferred != "" {
+				if inferred := inferFormatFromExt(opts.outputPath, cfg.Provider); inferred != "" {
 					opts.outputFmt = inferred
 				}
 				// Disable playback when -o is set, unless --play was explicitly provided
@@ -116,33 +133,33 @@ func init() {
 			}
 
 			start := time.Now()
-			var bytes int64
+			var byteCount int64
 			if opts.stream {
-				n, err := streamAndPlay(ctx, client, opts, payload)
-				bytes = n
+				n, err := streamAndPlay(ctx, provider, opts, payload)
+				byteCount = n
 				if err != nil {
 					return err
 				}
 			} else {
-				n, err := convertAndPlay(ctx, client, opts, payload)
-				bytes = n
+				n, err := convertAndPlay(ctx, provider, opts, payload)
+				byteCount = n
 				if err != nil {
 					return err
 				}
 			}
 			if opts.metrics {
-				fmt.Fprintf(os.Stderr, "metrics: chars=%d bytes=%d model=%s voice=%s stream=%t latencyTier=%d dur=%s\n",
-					len([]rune(text)), bytes, opts.modelID, opts.voiceID, opts.stream, opts.latencyTier, time.Since(start).Truncate(time.Millisecond))
+				fmt.Fprintf(os.Stderr, "metrics: provider=%s chars=%d bytes=%d model=%s voice=%s stream=%t latencyTier=%d dur=%s\n",
+					cfg.Provider, len([]rune(text)), byteCount, opts.modelID, opts.voiceID, opts.stream, opts.latencyTier, time.Since(start).Truncate(time.Millisecond))
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.voiceID, "voice-id", "", "Voice ID to use (ELEVENLABS_VOICE_ID)")
+	cmd.Flags().StringVar(&opts.voiceID, "voice-id", "", "Voice ID to use (or <PROVIDER>_VOICE_ID env var)")
 	cmd.Flags().StringVarP(&opts.voiceID, "voice", "v", opts.voiceID, "Alias for --voice-id; accepts name or ID; use '?' to list voices")
-	cmd.Flags().StringVar(&opts.modelID, "model-id", opts.modelID, "Model ID (default: eleven_v3). Common: eleven_multilingual_v2 (stable), eleven_flash_v2_5 (fast/cheap), eleven_turbo_v2_5 (balanced).")
+	cmd.Flags().StringVar(&opts.modelID, "model-id", opts.modelID, "Model ID (provider-specific, uses provider default if not set)")
 	cmd.Flags().StringVarP(&opts.outputPath, "output", "o", "", "Write audio to file (disables playback unless --play is also set)")
-	cmd.Flags().StringVar(&opts.outputFmt, "format", opts.outputFmt, "Output format (e.g. mp3_44100_128)")
+	cmd.Flags().StringVar(&opts.outputFmt, "format", opts.outputFmt, "Output format (provider-specific)")
 	cmd.Flags().BoolVar(&opts.stream, "stream", opts.stream, "Stream audio while generating")
 	cmd.Flags().BoolVar(&opts.play, "play", opts.play, "Play audio through speakers")
 	cmd.Flags().IntVar(&opts.latencyTier, "latency-tier", 0, "Streaming latency tier (0=default,1-4 lower latency may cost more)")
@@ -172,100 +189,97 @@ func init() {
 	rootCmd.AddCommand(cmd)
 }
 
-func buildTTSRequest(cmd *cobra.Command, opts speakOptions, text string) (elevenlabs.TTSRequest, error) {
+func buildTTSRequest(cmd *cobra.Command, opts speakOptions, text string) (tts.Request, error) {
 	flags := cmd.Flags()
 
-	var stabilityPtr *float64
+	req := tts.Request{
+		Text:         text,
+		Model:        opts.modelID,
+		OutputFormat: opts.outputFmt,
+		LatencyTier:  opts.latencyTier,
+	}
+
+	// Speed
+	speed := opts.speed
+	req.Speed = &speed
+
+	// Stability (ElevenLabs-specific, but we pass it through)
 	if flags.Changed("stability") {
 		if opts.stability < 0 || opts.stability > 1 {
-			return elevenlabs.TTSRequest{}, errors.New("stability must be between 0 and 1")
+			return tts.Request{}, errors.New("stability must be between 0 and 1")
 		}
+		// ElevenLabs eleven_v3 model has specific stability requirements
 		if opts.modelID == "eleven_v3" {
 			if !floatEqualsOneOf(opts.stability, []float64{0, 0.5, 1}) {
-				return elevenlabs.TTSRequest{}, errors.New("for eleven_v3, stability must be one of 0.0, 0.5, 1.0 (Creative/Natural/Robust)")
+				return tts.Request{}, errors.New("for eleven_v3, stability must be one of 0.0, 0.5, 1.0 (Creative/Natural/Robust)")
 			}
 		}
-		stabilityPtr = &opts.stability
+		req.Stability = &opts.stability
 	}
 
-	var similarityPtr *float64
+	// Similarity (ElevenLabs-specific)
 	if flags.Changed("similarity") || flags.Changed("similarity-boost") {
 		if opts.similarity < 0 || opts.similarity > 1 {
-			return elevenlabs.TTSRequest{}, errors.New("similarity must be between 0 and 1")
+			return tts.Request{}, errors.New("similarity must be between 0 and 1")
 		}
-		similarityPtr = &opts.similarity
+		req.SimilarityBoost = &opts.similarity
 	}
 
-	var stylePtr *float64
+	// Style (ElevenLabs-specific)
 	if flags.Changed("style") {
 		if opts.style < 0 || opts.style > 1 {
-			return elevenlabs.TTSRequest{}, errors.New("style must be between 0 and 1")
+			return tts.Request{}, errors.New("style must be between 0 and 1")
 		}
-		stylePtr = &opts.style
+		req.Style = &opts.style
 	}
 
+	// Speaker boost (ElevenLabs-specific)
 	if flags.Changed("speaker-boost") && flags.Changed("no-speaker-boost") {
-		return elevenlabs.TTSRequest{}, errors.New("choose only one of --speaker-boost or --no-speaker-boost")
+		return tts.Request{}, errors.New("choose only one of --speaker-boost or --no-speaker-boost")
 	}
-	var speakerBoostPtr *bool
 	if flags.Changed("speaker-boost") {
 		v := true
-		speakerBoostPtr = &v
+		req.UseSpeakerBoost = &v
 	} else if flags.Changed("no-speaker-boost") {
 		v := false
-		speakerBoostPtr = &v
+		req.UseSpeakerBoost = &v
 	}
 
-	var seedPtr *uint32
+	// Seed (ElevenLabs-specific)
 	if flags.Changed("seed") {
 		if opts.seed > 4294967295 {
-			return elevenlabs.TTSRequest{}, errors.New("seed must be between 0 and 4294967295")
+			return tts.Request{}, errors.New("seed must be between 0 and 4294967295")
 		}
 		v := uint32(opts.seed)
-		seedPtr = &v
+		req.Seed = &v
 	}
 
+	// Normalize
 	normalize := strings.ToLower(strings.TrimSpace(opts.normalize))
 	if flags.Changed("normalize") {
 		switch normalize {
 		case "auto", "on", "off":
+			req.Normalize = normalize
 		default:
-			return elevenlabs.TTSRequest{}, errors.New("normalize must be one of: auto, on, off")
+			return tts.Request{}, errors.New("normalize must be one of: auto, on, off")
 		}
-	} else {
-		normalize = ""
 	}
 
+	// Language
 	lang := strings.ToLower(strings.TrimSpace(opts.lang))
 	if flags.Changed("lang") {
 		if len(lang) != 2 {
-			return elevenlabs.TTSRequest{}, errors.New("lang must be a 2-letter ISO 639-1 code (e.g. en, de, fr)")
+			return tts.Request{}, errors.New("lang must be a 2-letter ISO 639-1 code (e.g. en, de, fr)")
 		}
 		for _, r := range lang {
 			if r < 'a' || r > 'z' {
-				return elevenlabs.TTSRequest{}, errors.New("lang must be a 2-letter ISO 639-1 code (e.g. en, de, fr)")
+				return tts.Request{}, errors.New("lang must be a 2-letter ISO 639-1 code (e.g. en, de, fr)")
 			}
 		}
-	} else {
-		lang = ""
+		req.LanguageCode = lang
 	}
 
-	speed := opts.speed
-	return elevenlabs.TTSRequest{
-		Text:                   text,
-		ModelID:                opts.modelID,
-		OutputFormat:           opts.outputFmt,
-		Seed:                   seedPtr,
-		ApplyTextNormalization: normalize,
-		LanguageCode:           lang,
-		VoiceSettings: &elevenlabs.VoiceSettings{
-			Speed:           &speed,
-			Stability:       stabilityPtr,
-			SimilarityBoost: similarityPtr,
-			Style:           stylePtr,
-			UseSpeakerBoost: speakerBoostPtr,
-		},
-	}, nil
+	return req, nil
 }
 
 func floatEqualsOneOf(v float64, allowed []float64) bool {
@@ -327,8 +341,8 @@ func isStdinTTY() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-func streamAndPlay(ctx context.Context, client *elevenlabs.Client, opts speakOptions, payload elevenlabs.TTSRequest) (int64, error) {
-	resp, err := client.StreamTTS(ctx, opts.voiceID, payload, opts.latencyTier)
+func streamAndPlay(ctx context.Context, provider tts.Provider, opts speakOptions, payload tts.Request) (int64, error) {
+	resp, err := provider.StreamTTS(ctx, opts.voiceID, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -384,8 +398,8 @@ func streamAndPlay(ctx context.Context, client *elevenlabs.Client, opts speakOpt
 	return n, err
 }
 
-func convertAndPlay(ctx context.Context, client *elevenlabs.Client, opts speakOptions, payload elevenlabs.TTSRequest) (int64, error) {
-	data, err := client.ConvertTTS(ctx, opts.voiceID, payload)
+func convertAndPlay(ctx context.Context, provider tts.Provider, opts speakOptions, payload tts.Request) (int64, error) {
+	data, err := provider.ConvertTTS(ctx, opts.voiceID, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -414,25 +428,25 @@ func convertAndPlay(ctx context.Context, client *elevenlabs.Client, opts speakOp
 	return n, nil
 }
 
-func resolveVoice(ctx context.Context, client *elevenlabs.Client, voiceInput string) (string, error) {
+func resolveVoice(ctx context.Context, provider tts.Provider, voiceInput string) (string, error) {
 	voiceInput = strings.TrimSpace(voiceInput)
 	if voiceInput == "" {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		voices, err := client.ListVoices(ctx, "")
+		voices, err := provider.ListVoices(ctx, "")
 		if err != nil {
 			return "", fmt.Errorf("voice not specified and failed to fetch voices: %w", err)
 		}
 		if len(voices) == 0 {
-			return "", errors.New("no voices available; specify --voice or set ELEVENLABS_VOICE_ID")
+			return "", fmt.Errorf("no voices available; specify --voice or set %s_VOICE_ID", toEnvName(provider.Name()))
 		}
-		fmt.Fprintf(os.Stderr, "defaulting to voice %s (%s)\n", voices[0].Name, voices[0].VoiceID)
-		return voices[0].VoiceID, nil
+		fmt.Fprintf(os.Stderr, "defaulting to voice %s (%s)\n", voices[0].Name, voices[0].ID)
+		return voices[0].ID, nil
 	}
 	if voiceInput == "?" {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		voices, err := client.ListVoices(ctx, "")
+		voices, err := provider.ListVoices(ctx, "")
 		if err != nil {
 			return "", err
 		}
@@ -441,7 +455,7 @@ func resolveVoice(ctx context.Context, client *elevenlabs.Client, voiceInput str
 			return "", err
 		}
 		for _, v := range voices {
-			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", v.VoiceID, v.Name, v.Category); err != nil {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", v.ID, v.Name, v.Category); err != nil {
 				return "", err
 			}
 		}
@@ -451,40 +465,52 @@ func resolveVoice(ctx context.Context, client *elevenlabs.Client, voiceInput str
 		return "", nil
 	}
 
-	// If input looks like an ID (UUID-like), use directly.
+	// If input looks like an ID (UUID-like for ElevenLabs, or any ID with numbers), use directly.
 	if len(voiceInput) >= 15 && strings.ContainsAny(voiceInput, "0123456789") {
 		return voiceInput, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	voices, err := client.ListVoices(ctx, voiceInput)
+	voices, err := provider.ListVoices(ctx, voiceInput)
 	if err != nil {
 		return "", err
 	}
 	voiceInputLower := strings.ToLower(voiceInput)
 	for _, v := range voices {
 		if strings.ToLower(v.Name) == voiceInputLower {
-			fmt.Fprintf(os.Stderr, "using voice %s (%s)\n", v.Name, v.VoiceID)
-			return v.VoiceID, nil
+			fmt.Fprintf(os.Stderr, "using voice %s (%s)\n", v.Name, v.ID)
+			return v.ID, nil
 		}
 	}
 	if len(voices) > 0 {
 		v := voices[0]
-		fmt.Fprintf(os.Stderr, "using closest voice match %s (%s)\n", v.Name, v.VoiceID)
-		return v.VoiceID, nil
+		fmt.Fprintf(os.Stderr, "using closest voice match %s (%s)\n", v.Name, v.ID)
+		return v.ID, nil
 	}
 	return "", fmt.Errorf("voice %q not found; try 'sag voices' or -v '?'", voiceInput)
 }
 
-func inferFormatFromExt(path string) string {
+func inferFormatFromExt(path, provider string) string {
 	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".mp3":
-		return "mp3_44100_128"
-	case ".wav", ".wave":
-		return "pcm_44100"
-	default:
-		return ""
+	switch provider {
+	case "inworld":
+		switch ext {
+		case ".mp3":
+			return "mp3"
+		case ".wav", ".wave":
+			return "linear16"
+		default:
+			return ""
+		}
+	default: // elevenlabs and others
+		switch ext {
+		case ".mp3":
+			return "mp3_44100_128"
+		case ".wav", ".wave":
+			return "pcm_44100"
+		default:
+			return ""
+		}
 	}
 }
