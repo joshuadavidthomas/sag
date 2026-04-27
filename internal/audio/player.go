@@ -43,9 +43,6 @@ func StreamToSpeakers(ctx context.Context, r io.Reader) error {
 	}
 
 	player := audioCtx.NewPlayer(decoder)
-	defer func() {
-		_ = player.Close()
-	}()
 	player.Play()
 
 	return waitForPlayback(ctx, player)
