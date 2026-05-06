@@ -8,11 +8,20 @@ Homebrew (macOS):
 brew install steipete/tap/sag  # auto-taps steipete/tap
 ```
 
+Prebuilt binaries:
+- Download Linux, macOS, and Windows archives from the [latest GitHub release](https://github.com/steipete/sag/releases/latest).
+- On Linux, unpack the `linux_amd64` archive and place `sag` somewhere on your `PATH`, for example `/usr/local/bin`.
+
 Go toolchain:
 ```bash
-go install ./cmd/sag
+go install github.com/steipete/sag/cmd/sag@latest
 ```
 Requires Go 1.24+.
+
+Debian/Ubuntu source build prerequisites:
+```bash
+sudo apt install build-essential pkg-config libasound2-dev
+```
 
 ## Configuration
 - `ELEVENLABS_API_KEY` (required)
