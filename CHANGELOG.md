@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-05-06
 ### Added
 - Voice discovery: semantic `--query` over name/description/labels, repeatable `--label` filters, preview playback via `--try`, metadata caching, and server-side name search when supported.
 - Bare `sag` now reads piped stdin like macOS `say`, so `echo "hello" | sag` speaks the text without requiring the `speak` subcommand. (#14, thanks @atdrendel)
